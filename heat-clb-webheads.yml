@@ -1,0 +1,246 @@
+heat_template_version: 2015-10-15
+
+description: |
+  #### Creates:
+  #### - 2 web nodes running a simple site
+  ####   Cloud Load Balancer
+  ####   DNS A record for site, pointing to Cloud Load Balancer
+  #### Requires:
+  #### - Cloud DNS hosted at Rackspace on this account.
+  #### Author: Brian King
+  #### License: Apache
+  #### version: 0.0.1a
+  #### last modified: 2020-02-26
+
+
+parameter_groups:
+
+- label: Server Settings
+  parameters:
+    - serverName
+
+- label: DNS settings
+  parameters:
+    - domainToHost
+    - emailAddr
+
+parameters:
+
+# begin DNS params
+  domainToHost:
+    type: string
+    default: enter.yourdomain.here
+    label: Domain to host
+    description: Domain to host. DNS be hosted in Rackspace Cloud DNS on this account.
+
+  emailAddr:
+    type: string
+    default: nobody@noone.net
+    label: email address for Rackspace DNS
+
+#begin server params
+
+  serverName:
+    type: string
+    label: 'Name of server'
+    default: 'serverInstance'
+    constraints:
+      - allowed_pattern: '^[\w-]+$'
+        description: "Server name may only have alphanumeric characters, underscores, and dashes"
+resources:
+
+
+#Begin generic server resources
+
+  stackSSHKey:
+    type: OS::Nova::KeyPair
+    properties:
+      name: { get_param: "OS::stack_name" }
+      save_private_key: true
+
+#Begin server resources
+
+  serverPass:
+      type: OS::Heat::RandomString
+
+  cloudInitPackages:
+    type: OS::Heat::CloudConfig
+    properties:
+      cloud_config:
+        packages:
+          - httpd
+          - mod_ssl
+          - iptables-services
+          - iptables-utils
+
+  cloudInitScript:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      group: script
+      config:
+        str_replace:
+          params:
+            $domain: { get_param: domainToHost }
+          template: |
+                    #!/usr/bin/env bash
+                    # gallery-install.sh
+                    # installs sigal and images for demo website
+                    # author: Brian King
+                    # copyright: 2019
+                    # license: Apache
+
+                    easy_install pip
+                    pip install sigal > /dev/null 2>&1
+                    wget -qO /tmp/litarcades.zip https://50900a4f92b974ff9ce5-94a2eb82dea24a44a5848a3c12a70fa8.ssl.cf2.rackcdn.com/litarcades.zip
+                    mkdir -p /var/www/$domain/pictures
+                    mkdir /var/www/$domain/pictures
+                    unzip /tmp/litarcades.zip -d /var/www/$domain/pictures
+                    /usr/bin/sigal init /var/www/$domain/sigal.conf.py > /dev/null 2>&1
+                    /usr/bin/sigal build -c  /var/www/$domain/sigal.conf.py /var/www/$domain/pictures /var/www/$domain/  > /dev/null 2>&1
+                    mkdir -p /var/www/$domain
+                    mkdir -p /etc/httpd/conf.d/
+                    cat > /etc/httpd/conf.d/$domain.conf << EOF
+                    <VirtualHost *:80>
+                    ServerName $domain
+                    <Directory /var/www/$domain>
+                    Require all granted
+                    </Directory>
+                    DocumentRoot /var/www/$domain
+                    LogFormat "%{X-Forwarded-For}i %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\"" forwarded
+                    SetEnvIf X-Forwarded-For "^.*\..*\..*\..*" forwarded
+                    CustomLog "logs/access_log" combined env=!forwarded
+                    CustomLog "logs/access_log" forwarded env=forwarded
+                    </VirtualHost>
+                    EOF
+                    systemctl start httpd; systemctl enable httpd
+                    systemctl stop firewalld; systemctl mask firewalld; iptables -F; systemctl start iptables; systemctl enable iptables
+                    iptables -I INPUT 1 -m multiport -p tcp --dports http,https -j ACCEPT
+                    iptables-save > /etc/sysconfig/iptables
+
+
+
+  allCloudInit:
+    type: OS::Heat::MultipartMime
+    properties:
+      parts:
+      - config: {get_resource: cloudInitPackages}
+      - config: {get_resource: cloudInitScript }
+
+
+  serverInstance01:
+    type: OS::Nova::Server
+    properties:
+      name:
+        str_replace:
+          params:
+            $serverName:  { get_param: serverName }
+          template:  $serverName-01
+      image: "CentOS 7 (PVHVM)"
+      admin_pass: { get_attr: [ serverPass, value ]}
+      key_name: { get_resource: stackSSHKey }
+      flavor: general1-1
+      config_drive: True
+      user_data: { get_resource: allCloudInit }
+      metadata:
+        created_by: cn_orch_template
+      networks:
+        - network: '00000000-0000-0000-0000-000000000000'
+        - network: '11111111-1111-1111-1111-111111111111'
+
+  serverInstance02:
+    type: OS::Nova::Server
+    properties:
+      name:
+        str_replace:
+          params:
+            $serverName:  { get_param: serverName }
+          template:  $serverName-02
+      image: "CentOS 7 (PVHVM)"
+      admin_pass: { get_attr: [ serverPass, value ]}
+      key_name: { get_resource: stackSSHKey }
+      flavor: general1-1
+      config_drive: True
+      user_data: { get_resource: allCloudInit }
+      metadata:
+        created_by: cn_orch_template
+      networks:
+        - network: '00000000-0000-0000-0000-000000000000'
+        - network: '11111111-1111-1111-1111-111111111111'
+
+  cloudLoadBalancer:
+    type: Rackspace::Cloud::LoadBalancer
+    properties:
+      name:
+        str_replace:
+          template: stack_Load_Balancer
+          params:
+            stack: { get_param: "OS::stack_name" }
+      nodes: []
+      port: 80
+      protocol: HTTP
+      algorithm: LEAST_CONNECTIONS
+      sessionPersistence: SOURCE_IP
+      healthMonitor:
+        delay: 5
+        attemptsBeforeDeactivation: 2
+        timeout: 12
+        type: CONNECT
+      virtualIps:
+        - type: PUBLIC
+          ipVersion: IPV4
+
+  webNode01:
+    type: Rackspace::Cloud::LBNode
+    properties:
+      address: { get_attr: [serverInstance01, networks, private, 0] }
+      type: PRIMARY
+      condition: ENABLED
+      load_balancer: { get_resource: cloudLoadBalancer }
+      port: 80
+
+  webNode02:
+    type: Rackspace::Cloud::LBNode
+    properties:
+      address: { get_attr: [serverInstance02, networks, private, 0] }
+      type: PRIMARY
+      condition: ENABLED
+      load_balancer: { get_resource: cloudLoadBalancer }
+      port: 80
+
+  dnsRecord:
+    type: Rackspace::Cloud::DNS
+    properties:
+      emailAddress: {get_param: emailAddr}
+      name:
+        list_join:
+          - '.'
+          - - {str_split: ['.', { get_param: domainToHost }, 1]}
+          - - {str_split: ['.', { get_param: domainToHost }, 2]}
+      ttl: 300
+      records:
+        - type: A
+          data: { get_attr: [cloudLoadBalancer, PublicIp ]}
+          name: { get_param: domainToHost }
+
+
+outputs:
+
+  serverInstance01PublicIPs:
+      value: { get_attr: [serverInstance01, networks, public] }
+      description: 'Public IPs of serverInstance01'
+
+  serverInstance02PublicIPs:
+      value: { get_attr: [serverInstance02, networks, public] }
+      description: 'Public IPs of serverInstance02'
+
+  serverPassDisplay:
+    value: { get_attr: [serverPass, value ] }
+    description: 'Admin Password of web servers'
+
+  stackPrivateSSHKey:
+    value: { get_attr: ['stackSSHKey', 'private_key'] }
+    description: 'private Key for accessing servers and Fortigate-VM'
+
+  demoWebSite:
+    value: { get_param: domainToHost }
+    description: demo website
