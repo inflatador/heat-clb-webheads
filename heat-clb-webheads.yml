@@ -239,7 +239,7 @@ outputs:
 
   stackPrivateSSHKey:
     value: { get_attr: ['stackSSHKey', 'private_key'] }
-    description: 'private Key for accessing servers and Fortigate-VM'
+    description: 'private Key for accessing servers'
 
   demoWebSite:
     value: { get_param: domainToHost }
