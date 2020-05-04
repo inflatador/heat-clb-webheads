@@ -9,7 +9,6 @@
 # last modified: 2020-05-01
 
 yum -y install python3-pip > /dev/null 2>&1
-easy_install-3.6 pip3 > /dev/null 2>&1
 pip3 install sigal > /dev/null 2>&1
 wget -qO /tmp/litarcades.zip https://50900a4f92b974ff9ce5-94a2eb82dea24a44a5848a3c12a70fa8.ssl.cf2.rackcdn.com/litarcades.zip
 mkdir -p /var/www/$domain/pictures
